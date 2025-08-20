@@ -1,0 +1,1 @@
+Run commandline:  cargo test
