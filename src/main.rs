@@ -36,21 +36,9 @@ pub struct PriceLevel {
     pub orders: VecDeque<Order>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct HeapEntry {
     price: i64,
-}
-
-impl Ord for HeapEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.price.cmp(&other.price)
-    }
-}
-
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 use std::collections::{BinaryHeap, HashMap};
