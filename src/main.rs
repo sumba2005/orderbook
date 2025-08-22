@@ -16,8 +16,8 @@ pub enum Side {
 
 #[derive(Debug, Clone)]
 pub struct Trade {
-    pub price: i64,
-    pub quantity: i64,
+    pub price: u64,
+    pub quantity: u64,
     pub maker_id: u64,
     pub taker_id: u64,
 }
@@ -25,8 +25,8 @@ pub struct Trade {
 #[derive(Debug, Clone)]
 pub struct Order {
     pub id: u64,
-    pub price: i64,
-    pub quantity: i64,
+    pub price: u64,
+    pub quantity: u64,
     pub timestamp: u64,
 }
 
@@ -38,7 +38,7 @@ pub struct PriceLevel {
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct HeapEntry {
-    price: i64,
+    price: u64,
 }
 
 use std::collections::{BinaryHeap, HashMap};
@@ -47,29 +47,27 @@ use std::cmp::Reverse;
 pub struct OrderBook {
     buy_heap: BinaryHeap<HeapEntry>,
     sell_heap: BinaryHeap<Reverse<HeapEntry>>,
-    buy_map: HashMap<i64, PriceLevel>,
-    sell_map: HashMap<i64, PriceLevel>,
+    buy_map: HashMap<u64, PriceLevel>,
+    sell_map: HashMap<u64, PriceLevel>,
     trade_buffer: Vec<Trade>,
 }
 
 impl OrderBook {
-    // Existing best_buy and best_sell remain unchanged
-
-    pub fn buy_at(&self, price: i64) -> Option<(i64, i64)> {
-        self.buy_map.get(&price).map(|level| {
+    fn get_quantity_at_price(price_map: &HashMap<u64, PriceLevel>,  price: u64) -> Option<(u64, u64)> {
+        price_map.get(&price).map(|level| {
             let total_qty = level.orders.iter().map(|o| o.quantity).sum();
             (price, total_qty)
         })
     }
 
-    pub fn sell_at(&self, price: i64) -> Option<(i64, i64)> {
-        self.sell_map.get(&price).map(|level| {
-            let total_qty = level.orders.iter().map(|o| o.quantity).sum();
-            (price, total_qty)
-        })
+    pub fn buy_at(&self, price: u64) -> Option<(u64, u64)> {
+        OrderBook::get_quantity_at_price(&self.buy_map, price)
+    }
+
+    pub fn sell_at(&self, price: u64) -> Option<(u64, u64)> {
+        OrderBook::get_quantity_at_price(&self.sell_map, price)
     }
 }
-
 
 impl OrderBook {
     pub fn new() -> Self {
@@ -82,8 +80,8 @@ impl OrderBook {
         }
     }
 
-    pub fn place_order(&mut self, side: Side, price: i64, quantity: i64, id: u64) -> &[Trade] {
-        if quantity <= 0 {
+    pub fn place_order(&mut self, side: Side, price: u64, quantity: u64, id: u64) -> &[Trade] {
+        if quantity == 0 {
             self.trade_buffer.clear();
             return &self.trade_buffer;
         }
@@ -94,32 +92,25 @@ impl OrderBook {
 
         match side {
             Side::Buy => {
+                // Buy order matches against sell_heap/sell_map
                 while remaining_quantity > 0 {
                     let best_price = self.sell_heap.peek().map(|p| p.0.price);
                     if let Some(best_price) = best_price {
                         if price < best_price {
                             break;
                         }
+                        let level = self.sell_map.get_mut(&best_price).unwrap();
+                        Self::match_level(level, best_price, &mut remaining_quantity, id, &mut self.trade_buffer);
 
-                        let matched = {
-                            let level = self.sell_map.get_mut(&best_price).unwrap();
-                            Self::match_level(level, best_price, &mut remaining_quantity, id, &mut self.trade_buffer)
-                        };
-
-                        if matched {
-                            let level_empty = self.sell_map.get(&best_price).map_or(true, |lvl| lvl.orders.is_empty());
-                            if level_empty {
-                                self.sell_map.remove(&best_price);
-                                self.sell_heap.pop();
-                            }
-                        } else {
-                            break;
+                        // remove this price level if empty
+                        if self.sell_map.get(&best_price).map_or(true, |lvl| lvl.orders.is_empty()) {
+                            self.sell_map.remove(&best_price);
+                            self.sell_heap.pop();
                         }
                     } else {
                         break;
                     }
                 }
-
                 if remaining_quantity > 0 {
                     let order = Order { id, price, quantity: remaining_quantity, timestamp };
                     let level = self.buy_map.entry(price).or_insert_with(|| PriceLevel {
@@ -131,34 +122,26 @@ impl OrderBook {
                     }
                 }
             }
-
             Side::Sell => {
+                // Sell order matches against buy_heap/buy_map
                 while remaining_quantity > 0 {
                     let best_price = self.buy_heap.peek().map(|p| p.price);
                     if let Some(best_price) = best_price {
                         if price > best_price {
                             break;
                         }
+                        let level = self.buy_map.get_mut(&best_price).unwrap();
+                        Self::match_level(level, best_price, &mut remaining_quantity, id, &mut self.trade_buffer);
 
-                        let matched = {
-                            let level = self.buy_map.get_mut(&best_price).unwrap();
-                            Self::match_level(level, best_price, &mut remaining_quantity, id, &mut self.trade_buffer)
-                        };
-
-                        if matched {
-                            let level_empty = self.buy_map.get(&best_price).map_or(true, |lvl| lvl.orders.is_empty());
-                            if level_empty {
-                                self.buy_map.remove(&best_price);
-                                self.buy_heap.pop();
-                            }
-                        } else {
-                            break;
+                        // remove this price level if empty
+                        if self.buy_map.get(&best_price).map_or(true, |lvl| lvl.orders.is_empty()) {
+                            self.buy_map.remove(&best_price);
+                            self.buy_heap.pop();
                         }
                     } else {
                         break;
                     }
                 }
-
                 if remaining_quantity > 0 {
                     let order = Order { id, price, quantity: remaining_quantity, timestamp };
                     let level = self.sell_map.entry(price).or_insert_with(|| PriceLevel {
@@ -171,19 +154,18 @@ impl OrderBook {
                 }
             }
         }
-
         &self.trade_buffer
     }
 
     fn match_level(
         level: &mut PriceLevel,
-        price: i64,
-        remaining_quantity: &mut i64,
+        price: u64,
+        remaining_quantity: &mut u64,
         taker_id: u64,
         trades: &mut Vec<Trade>,
-    ) -> bool {
+    ) {
         println!("Before match_level, price level {:?}", level);
-   
+
         while let Some(order) = level.orders.front_mut() {
             let trade_qty = order.quantity.min(*remaining_quantity);
             trades.push(Trade {
@@ -195,7 +177,6 @@ impl OrderBook {
 
             order.quantity -= trade_qty;
             *remaining_quantity -= trade_qty;
-            println!("match_level: order.qty{}, Remaining quantity ${} x {}" , order.quantity, price, remaining_quantity);
 
             if order.quantity == 0 {
                 level.orders.pop_front();
@@ -207,11 +188,9 @@ impl OrderBook {
         }
 
         println!("After match_level, price level {:?}", level);
-
-        true
     }
 
-    pub fn best_buy(&self) -> Option<(i64, i64)> {
+    pub fn best_buy(&self) -> Option<(u64, u64)> {
         self.buy_heap.peek().and_then(|entry| {
             self.buy_map.get(&entry.price).map(|level| {
                 let total_qty = level.orders.iter().map(|o| o.quantity).sum();
@@ -220,7 +199,7 @@ impl OrderBook {
         })
     }
 
-    pub fn best_sell(&self) -> Option<(i64, i64)> {
+    pub fn best_sell(&self) -> Option<(u64, u64)> {
         self.sell_heap.peek().and_then(|Reverse(entry)| {
             self.sell_map.get(&entry.price).map(|level| {
                 let total_qty = level.orders.iter().map(|o| o.quantity).sum();
@@ -244,7 +223,7 @@ fn test_basic_match() {
     assert_eq!(ob.place_order(Side::Buy, 8, 300, 3).len(), 0);
     assert_eq!(ob.place_order(Side::Buy, 7, 400, 4).len(), 0);
     assert_eq!(ob.place_order(Side::Buy, 8, 500, 5).len(), 0);
-   
+
     assert_eq!(ob.place_order(Side::Sell, 11, 100, 1).len(), 0);
     assert_eq!(ob.place_order(Side::Sell, 12, 100, 1).len(), 0);
     assert_eq!(ob.place_order(Side::Sell, 13, 100, 1).len(), 0);
@@ -267,7 +246,7 @@ fn test_fifo_priority() {
     assert_eq!(ob.place_order(Side::Buy, 10, 300, 3).len(), 0);
     assert_eq!(ob.place_order(Side::Buy, 9, 400, 4).len(), 0);
     assert_eq!(ob.place_order(Side::Buy, 9, 500, 5).len(), 0);
-   
+
     let trades = ob.place_order(Side::Sell, 10, 600, 10);
 
     assert_eq!(trades.len(), 3);
@@ -286,7 +265,7 @@ fn test_partial_fill() {
     assert_eq!(ob.place_order(Side::Buy, 9, 400, 4).len(), 0);
     assert_eq!(ob.place_order(Side::Buy, 9, 500, 5).len(), 0);
 
-    println!("First partial fill");    
+    println!("First partial fill");
     let trades = ob.place_order(Side::Sell, 10, 199, 10);
 
     assert_eq!(trades.len(), 2);
@@ -294,7 +273,7 @@ fn test_partial_fill() {
     assert_eq!(trades[0].quantity, 100);
     assert_eq!(trades[1].maker_id, 2);
     assert_eq!(trades[1].quantity, 99);
-   
+
     println!("Second partial fill");
     let trades = ob.place_order(Side::Sell, 10, 199, 11);
     assert_eq!(trades.len(), 2);
